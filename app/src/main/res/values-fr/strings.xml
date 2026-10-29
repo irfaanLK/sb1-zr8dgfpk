@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tagline">Mesure de pétanque</string>
+
+    <string name="status_starting">Démarrage de la caméra…</string>
+    <string name="status_scan">Balayez lentement le sol avec le téléphone</string>
+    <string name="status_find_jack">Visez le cochonnet</string>
+    <string name="status_find_boules">Cochonnet trouvé · recherche des boules</string>
+    <string name="status_measuring">Mesure en cours · ne bougez pas</string>
+    <string name="status_locked">Mesure verrouillée</string>
+    <string name="status_lost">Suivi perdu · tenez le téléphone au-dessus du terrain</string>
+    <string name="status_dark">Pas assez de lumière</string>
+    <string name="status_fast">Trop rapide · ralentissez</string>
+    <string name="status_texture">Visez le sol autour des boules</string>
+
+    <string name="hint_gestures">Touchez une boule pour choisir son équipe · Appui long pour ajouter ou retirer</string>
+    <string name="closest_title">Boules les plus proches</string>
+    <string name="no_measure">Cadrez le cochonnet et les boules</string>
+    <string name="boule">Boule</string>
+    <string name="jack">Cochonnet</string>
+    <string name="no_team">Sans équipe</string>
+    <string name="closest">La plus proche</string>
+
+    <string name="action_history">Historique</string>
+    <string name="action_capture">Capturer</string>
+    <string name="action_lock">Verrouiller</string>
+    <string name="action_unlock">Déverrouiller</string>
+    <string name="action_reset">Réinitialiser</string>
+    <string name="action_settings">Réglages</string>
+    <string name="action_back">Retour</string>
+    <string name="captured">Enregistré dans l\'historique</string>
+    <string name="captured_gallery">Enregistré dans l\'historique et la galerie</string>
+    <string name="capture_failed">Impossible d\'enregistrer la photo</string>
+    <string name="team_set">%1$s</string>
+
+    <string name="menu_title">À cet endroit</string>
+    <string name="menu_add_boule">Ajouter une boule ici</string>
+    <string name="menu_set_jack">Placer le cochonnet ici</string>
+    <string name="menu_remove">Retirer cette boule</string>
+    <string name="menu_no_ground">Sol pas encore détecté ici · bougez un peu le téléphone</string>
+    <string name="cancel">Annuler</string>
+
+    <string name="permission_title">Accès à la caméra requis</string>
+    <string name="permission_body">P.E.T utilise la caméra arrière et la réalité augmentée pour mesurer la distance entre le cochonnet et les boules. Tout reste sur votre téléphone.</string>
+    <string name="permission_grant">Autoriser la caméra</string>
+    <string name="permission_settings">Ouvrir les réglages</string>
+    <string name="ar_needed_title">Services Google Play pour la RA requis</string>
+    <string name="ar_needed_body">P.E.T a besoin des Services Google Play pour la RA pour mesurer. Installez-les ou mettez-les à jour, puis revenez.</string>
+    <string name="ar_unsupported">Ce téléphone n\'est pas compatible ARCore : P.E.T ne peut pas mesurer.</string>
+    <string name="ar_error">Impossible de démarrer la RA : %1$s</string>
+    <string name="retry">Réessayer</string>
+
+    <string name="history_title">Historique</string>
+    <string name="history_empty_title">Aucune mesure</string>
+    <string name="history_empty_body">Touchez le déclencheur sur l\'écran de mesure pour enregistrer une photo avec ses distances.</string>
+    <string name="share">Partager</string>
+    <string name="delete">Supprimer</string>
+    <string name="delete_title">Supprimer cette mesure ?</string>
+    <string name="delete_body">La photo et ses distances seront supprimées.</string>
+    <string name="share_subject">Mesure P.E.T</string>
+    <plurals name="boule_count">
+        <item quantity="one">%d boule</item>
+        <item quantity="other">%d boules</item>
+    </plurals>
+
+    <string name="settings_title">Réglages</string>
+    <string name="settings_game">Partie</string>
+    <string name="format_doublette">Doublette · 2 contre 2</string>
+    <string name="format_triplette">Triplette · 3 contre 3</string>
+    <string name="format_doublette_short">Doublette</string>
+    <string name="format_triplette_short">Triplette</string>
+    <string name="settings_teams">Équipes</string>
+    <string name="team_a_default">Équipe A</string>
+    <string name="team_b_default">Équipe B</string>
+    <string name="team_name_hint">Nom de l\'équipe</string>
+    <string name="settings_measure">Mesure</string>
+    <string name="settings_shown">Boules affichées</string>
+    <string name="settings_shown_body">Seules les boules les plus proches ont une ligne</string>
+    <string name="settings_boule_diameter">Diamètre des boules</string>
+    <string name="settings_jack_diameter">Diamètre du cochonnet</string>
+    <string name="settings_precision">Précision</string>
+    <string name="precision_cm">1 cm</string>
+    <string name="precision_tenth">0,1 cm</string>
+    <string name="settings_saving">Enregistrement</string>
+    <string name="settings_gallery">Enregistrer aussi les photos dans la galerie</string>
+    <string name="settings_language">Langue</string>
+    <string name="language_system">Langue du système</string>
+    <string name="settings_about">Comment P.E.T mesure</string>
+    <string name="about_body">Les distances sont mesurées bord à bord : du point le plus proche du cochonnet au point le plus proche de chaque boule, comme avec un mètre. Pour de meilleurs résultats, tenez le téléphone à plat à environ 1 m au-dessus des boules et gardez le cochonnet et les boules dans le cadre.</string>
+    <string name="mm_value">%1$d mm</string>
+</resources>
