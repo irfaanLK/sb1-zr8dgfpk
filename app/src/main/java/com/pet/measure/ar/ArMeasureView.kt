@@ -12,8 +12,10 @@ import android.view.Surface
 import android.view.WindowManager
 import android.widget.FrameLayout
 import com.google.ar.core.Camera
+import com.google.ar.core.DepthPoint
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
+import com.google.ar.core.Point
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingFailureReason
 import com.google.ar.core.TrackingState
@@ -82,6 +84,7 @@ class ArMeasureView(context: Context, private val shared: MeasureSessionState) :
     private var lastDetectAt = 0L
     private var lastPublishAt = 0L
     private var groundY = Float.NaN
+    private var lastGroundSampleAt = 0L
     private var viewWidth = 1
     private var viewHeight = 1
     private var displayChanged = true
@@ -210,7 +213,7 @@ class ArMeasureView(context: Context, private val shared: MeasureSessionState) :
             return
         }
 
-        updateGround(frame, session)
+        updateGround(frame, session, now)
         if (!shared.locked && !groundY.isNaN() && now - lastDetectAt > DETECT_INTERVAL_MS && !detecting.get()) {
             submitDetection(frame, camera)
             lastDetectAt = now
@@ -293,17 +296,41 @@ class ArMeasureView(context: Context, private val shared: MeasureSessionState) :
         return floatArrayOf((nx + 1f) / 2f * viewWidth, (1f - ny) / 2f * viewHeight)
     }
 
-    /** Ground height from the plane under the screen centre, falling back to the largest plane. */
-    private fun updateGround(frame: Frame, session: Session) {
+    /**
+     * Ground height. Prefers the plane under the screen centre, then the largest plane. Before
+     * ARCore has found a plane, samples depth and feature points across the view, so measuring
+     * can start within a moment instead of waiting for plane detection.
+     */
+    private fun updateGround(frame: Frame, session: Session, now: Long) {
         val centreHit = frame.hitTest(viewWidth / 2f, viewHeight / 2f).firstOrNull {
             val t = it.trackable
             t is Plane && t.type == Plane.Type.HORIZONTAL_UPWARD_FACING && t.trackingState == TrackingState.TRACKING
         }
-        val y = centreHit?.hitPose?.ty() ?: session.getAllTrackables(Plane::class.java)
+        var y = centreHit?.hitPose?.ty() ?: session.getAllTrackables(Plane::class.java)
             .filter { it.trackingState == TrackingState.TRACKING && it.type == Plane.Type.HORIZONTAL_UPWARD_FACING && it.subsumedBy == null }
             .maxByOrNull { it.extentX * it.extentZ }
             ?.centerPose?.ty()
-        if (y != null) groundY = if (groundY.isNaN()) y else groundY * 0.8f + y * 0.2f
+        if (y == null) {
+            if (now - lastGroundSampleAt < GROUND_SAMPLE_INTERVAL_MS) return
+            lastGroundSampleAt = now
+            y = sampledGround(frame) ?: return
+        }
+        groundY = if (groundY.isNaN()) y else groundY * 0.8f + y * 0.2f
+    }
+
+    /** Low-median height of depth/feature hits on a 5x5 grid; balls only push a few samples up. */
+    private fun sampledGround(frame: Frame): Float? {
+        val heights = ArrayList<Float>(25)
+        for (gy in 1..5) for (gx in 1..5) {
+            val hit = frame.hitTest(viewWidth * gx / 6f, viewHeight * gy / 6f).firstOrNull {
+                val t = it.trackable
+                t is DepthPoint || t is Point || t is Plane
+            } ?: continue
+            heights.add(hit.hitPose.ty())
+        }
+        if (heights.size < 6) return null
+        heights.sort()
+        return heights[heights.size * 2 / 5]
     }
 
     private fun submitDetection(frame: Frame, camera: Camera) {
@@ -401,5 +428,6 @@ class ArMeasureView(context: Context, private val shared: MeasureSessionState) :
     companion object {
         private const val DETECT_INTERVAL_MS = 90L
         private const val PUBLISH_INTERVAL_MS = 150L
+        private const val GROUND_SAMPLE_INTERVAL_MS = 250L
     }
 }

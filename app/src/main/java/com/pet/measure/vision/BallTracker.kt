@@ -16,7 +16,7 @@ class Track(
     val confirmed get() = !hidden && (manual || hits >= CONFIRM_HITS)
 
     companion object {
-        const val CONFIRM_HITS = 3
+        const val CONFIRM_HITS = 2
     }
 }
 

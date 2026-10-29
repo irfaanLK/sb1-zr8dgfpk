@@ -1,5 +1,6 @@
 package com.pet.measure.vision
 
+import java.util.concurrent.ForkJoinPool
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -51,6 +52,8 @@ data class Detection(
  * use colour (wood vs metal) and depth (sticks out of the ground) to confirm.
  */
 class BallDetector(var spec: BallSpec = BallSpec()) {
+    /** Optional diagnostics: receives one line per candidate considered. */
+    var trace: ((String) -> Unit)? = null
 
     private var w = 0
     private var h = 0
@@ -60,7 +63,17 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
     private lateinit var mag: FloatArray
     private lateinit var edge: BooleanArray
     private lateinit var accB: FloatArray
+    private lateinit var tmpB: FloatArray
     private lateinit var accJ: FloatArray
+    private lateinit var tmpJ: FloatArray
+    private lateinit var bestB: FloatArray
+    private lateinit var bestJ: FloatArray
+    private lateinit var scaleB: ByteArray
+    private lateinit var scaleJ: ByteArray
+    private var edgeIdx = IntArray(0)
+    private var edgeNx = FloatArray(0)
+    private var edgeNy = FloatArray(0)
+    private var edgeCount = 0
 
     private var gridW = 0
     private var gridH = 0
@@ -73,7 +86,10 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
         val n = w * h
         smooth = IntArray(n); gx = IntArray(n); gy = IntArray(n)
         mag = FloatArray(n); edge = BooleanArray(n)
-        accB = FloatArray(n); accJ = FloatArray(n)
+        accB = FloatArray(n); tmpB = FloatArray(n)
+        accJ = FloatArray(n); tmpJ = FloatArray(n)
+        bestB = FloatArray(n); bestJ = FloatArray(n)
+        scaleB = ByteArray(n); scaleJ = ByteArray(n)
         gridW = w / GRID + 2; gridH = h / GRID + 2
         gridRB = FloatArray(gridW * gridH); gridRJ = FloatArray(gridW * gridH)
     }
@@ -82,12 +98,22 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
         ensureBuffers(input.width, input.height)
         computeRadiusGrid(input)
         computeEdges(input.luma)
-        vote()
+        collectEdges()
+        // The two ball sizes are independent: vote for the jack on a second core.
+        val jackVotes = ForkJoinPool.commonPool().submit { vote(gridRJ, bestJ, scaleJ, accJ, tmpJ) }
+        vote(gridRB, bestB, scaleB, accB, tmpB)
+        jackVotes.get()
 
-        val boules = findBalls(input, BallKind.BOULE, accB, emptyList())
-        val jackCandidates = findBalls(input, BallKind.JACK, accJ, boules)
-        val jack = jackCandidates.maxByOrNull { it.score }
-        return if (jack != null) boules + jack else boules
+        val boules = findBalls(input, BallKind.BOULE)
+        val jacks = findBalls(input, BallKind.JACK).sortedByDescending { it.score }
+
+        // Seen from above, the jack can never sit inside a boule's outline, so when a jack and a
+        // boule overlap one of them is false: a highlight on the boule, or a shadow ring around
+        // the jack. Keep whichever is the more convincing.
+        val jack = jacks.firstOrNull { j ->
+            boules.none { b -> overlaps(j, b) && b.score >= j.score }
+        } ?: return boules
+        return boules.filterNot { overlaps(jack, it) } + jack
     }
 
     // ---- Expected radius per pixel -------------------------------------------------------
@@ -179,83 +205,128 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
 
     // ---- Hough voting --------------------------------------------------------------------
 
-    private fun vote() {
-        java.util.Arrays.fill(accB, 0f)
-        java.util.Arrays.fill(accJ, 0f)
+    private fun collectEdges() {
+        var n = 0
+        for (i in edge.indices) if (edge[i]) n++
+        if (edgeIdx.size < n) {
+            edgeIdx = IntArray(n); edgeNx = FloatArray(n); edgeNy = FloatArray(n)
+        }
+        var k = 0
         for (y in 3 until h - 3) {
             val row = y * w
             for (x in 3 until w - 3) {
                 val i = row + x
                 if (!edge[i]) continue
                 val inv = 1f / mag[i]
-                val nx = gx[i] * inv
-                val ny = gy[i] * inv
-                splat(accB, x, y, nx, ny, radiusAt(gridRB, x, y))
-                splat(accJ, x, y, nx, ny, radiusAt(gridRJ, x, y))
+                edgeIdx[k] = i; edgeNx[k] = gx[i] * inv; edgeNy[k] = gy[i] * inv
+                k++
+            }
+        }
+        edgeCount = k
+    }
+
+    /**
+     * Votes for circle centres at several radii around the expected one, because the predicted
+     * size is never exact (ground height error, boule size, dark reflections on the rim).
+     * Keeps, per pixel, the best normalised score over the radius scales and which scale won.
+     */
+    private fun vote(grid: FloatArray, best: FloatArray, bestScale: ByteArray, acc: FloatArray, tmp: FloatArray) {
+        java.util.Arrays.fill(best, 0f)
+        for ((si, scale) in SCALES.withIndex()) {
+            java.util.Arrays.fill(acc, 0f)
+            for (k in 0 until edgeCount) {
+                val i = edgeIdx[k]
+                val x = i % w; val y = i / w
+                val r = radiusAt(grid, x, y) * scale
+                if (r <= 0f) continue
+                val nx = edgeNx[k]; val ny = edgeNy[k]
+                var cx = (x + nx * r).roundToInt()
+                var cy = (y + ny * r).roundToInt()
+                if (cx in 0 until w && cy in 0 until h) acc[cy * w + cx] += 1f
+                cx = (x - nx * r).roundToInt()
+                cy = (y - ny * r).roundToInt()
+                if (cx in 0 until w && cy in 0 until h) acc[cy * w + cx] += 1f
+            }
+            // 5x5 box sum (separable) tolerates small radius and edge-position errors.
+            for (y in 0 until h) {
+                val row = y * w
+                for (x in 2 until w - 2) {
+                    val i = row + x
+                    tmp[i] = acc[i - 2] + acc[i - 1] + acc[i] + acc[i + 1] + acc[i + 2]
+                }
+            }
+            for (y in 4 until h - 4) {
+                val row = y * w
+                for (x in 4 until w - 4) {
+                    val i = row + x
+                    val sum = tmp[i - 2 * w] + tmp[i - w] + tmp[i] + tmp[i + w] + tmp[i + 2 * w]
+                    if (sum < 3f) continue
+                    val r = radiusAt(grid, x, y) * scale
+                    if (r <= 0f) continue
+                    val score = sum / (CIRCLE_PIXELS_PER_RADIUS * r)
+                    if (score > best[i]) {
+                        best[i] = score
+                        bestScale[i] = si.toByte()
+                    }
+                }
             }
         }
     }
 
-    private fun splat(acc: FloatArray, x: Int, y: Int, nx: Float, ny: Float, r: Float) {
-        if (r <= 0f) return
-        var cx = (x + nx * r).roundToInt()
-        var cy = (y + ny * r).roundToInt()
-        if (cx in 0 until w && cy in 0 until h) acc[cy * w + cx] += 1f
-        cx = (x - nx * r).roundToInt()
-        cy = (y - ny * r).roundToInt()
-        if (cx in 0 until w && cy in 0 until h) acc[cy * w + cx] += 1f
-    }
-
     // ---- Peaks, refinement and classification --------------------------------------------
 
-    private class Candidate(val x: Int, val y: Int, val score: Float)
+    private class Candidate(val x: Int, val y: Int, val score: Float, val radius: Float)
 
-    private fun findBalls(
-        input: FrameInput, kind: BallKind, acc: FloatArray, exclude: List<Detection>,
-    ): List<Detection> {
+    private fun dist2(a: Detection, b: Detection) = (a.u - b.u) * (a.u - b.u) + (a.v - b.v) * (a.v - b.v)
+    private fun overlaps(j: Detection, b: Detection) = dist2(j, b) < (b.radiusPx + j.radiusPx * 0.6f).let { it * it }
+
+    private fun findBalls(input: FrameInput, kind: BallKind): List<Detection> {
         val grid = if (kind == BallKind.BOULE) gridRB else gridRJ
+        val best = if (kind == BallKind.BOULE) bestB else bestJ
+        val bestScale = if (kind == BallKind.BOULE) scaleB else scaleJ
         val candidates = ArrayList<Candidate>()
         val minScore = if (kind == BallKind.BOULE) PEAK_MIN_BOULE else PEAK_MIN_JACK
         for (y in 4 until h - 4) {
             val row = y * w
             for (x in 4 until w - 4) {
                 val i = row + x
-                if (acc[i] < 2f) continue
-                val r = radiusAt(grid, x, y)
-                if (r <= 0f) continue
-                // 5x5 neighbourhood sum tolerates small radius and edge-position errors.
-                var s = 0f
-                for (oy in -2..2) {
-                    val o = i + oy * w
-                    s += acc[o - 2] + acc[o - 1] + acc[o] + acc[o + 1] + acc[o + 2]
-                }
-                val score = s / (CIRCLE_PIXELS_PER_RADIUS * r)
+                val score = best[i]
                 if (score < minScore) continue
-                candidates.add(Candidate(x, y, score))
+                // Keep 3x3 local maxima only.
+                if (score < best[i - 1] || score < best[i + 1] || score < best[i - w] || score < best[i + w] ||
+                    score < best[i - w - 1] || score < best[i - w + 1] || score < best[i + w - 1] || score < best[i + w + 1]
+                ) continue
+                candidates.add(Candidate(x, y, score, radiusAt(grid, x, y) * SCALES[bestScale[i].toInt()]))
             }
         }
         candidates.sortByDescending { it.score }
 
         val out = ArrayList<Detection>()
-        val taken = ArrayList<FloatArray>() // x, y, r of accepted / suppressed peaks
+        var attempts = 0
         for (c in candidates) {
-            if (out.size >= MAX_PER_KIND) break
-            val rExp = radiusAt(grid, c.x, c.y)
-            if (taken.any { (it[0] - c.x) * (it[0] - c.x) + (it[1] - c.y) * (it[1] - c.y) < (SUPPRESS * max(it[2], rExp)).let { d -> d * d } }) continue
-            taken.add(floatArrayOf(c.x.toFloat(), c.y.toFloat(), rExp))
+            if (out.size >= MAX_PER_KIND || attempts >= MAX_ATTEMPTS) break
+            val rNominal = radiusAt(grid, c.x, c.y)
+            // Skip peaks that sit on a ball we already accepted.
+            if (out.any { (it.u - c.x) * (it.u - c.x) + (it.v - c.y) * (it.v - c.y) < (SUPPRESS * it.radiusPx).let { d -> d * d } }) continue
+            attempts++
 
-            val fit = refine(c.x.toFloat(), c.y.toFloat(), rExp) ?: continue
-            if (fit.r < rExp * 0.72f || fit.r > rExp * 1.32f) continue
-            if (exclude.any { e ->
-                    val dx = e.u - fit.x; val dy = e.v - fit.y
-                    dx * dx + dy * dy < (e.radiusPx + fit.r * 0.6f).let { it * it }
-                }) continue
+            val fit = refine(c.x.toFloat(), c.y.toFloat(), c.radius)
+            trace?.invoke("$kind cand ${c.x},${c.y} s=${"%.2f".format(c.score)} r=${"%.1f".format(c.radius)} nom=${"%.1f".format(rNominal)} fit=${fit?.let { "r=%.1f cov=%.2f".format(it.r, it.coverage) }}")
+            if (fit == null) continue
+            if (fit.r < rNominal * MIN_SIZE || fit.r > rNominal * MAX_SIZE) continue
+
+            val look = appearanceFactor(input, fit.x, fit.y, fit.r)
+            trace?.invoke("   look=${"%.2f".format(look)}")
+            if (look < MIN_APPEARANCE) continue
 
             val shape = 0.5f * min(c.score, 1.2f) / 1.2f + 0.5f * fit.coverage
             val colour = colourFactor(input, kind, fit.x, fit.y, fit.r)
+            // The jack is natural wood: a grey or black circle is a stone, not the jack.
+            if (kind == BallKind.JACK && colour < MIN_JACK_COLOUR) continue
             val depth = if (kind == BallKind.BOULE) depthFactor(input, fit.x, fit.y) else 1f
-            val score = shape * colour * depth
+            val score = shape * colour * depth * (0.6f + 0.4f * look)
             val threshold = if (kind == BallKind.BOULE) ACCEPT_BOULE else ACCEPT_JACK
+            trace?.invoke("   shape=${"%.2f".format(shape)} colour=${"%.2f".format(colour)} depth=$depth score=${"%.2f".format(score)}")
             if (score < threshold) continue
 
             val center = input.camera.intersectHorizontal(fit.x, fit.y, input.groundY + spec.radius(kind)) ?: continue
@@ -314,6 +385,52 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
         return Fit(cx, cy, r, coverage)
     }
 
+    /**
+     * How much the disk looks like an object rather than a patch of ground, from 0 to 1.
+     * A ball differs in brightness or colour from the ground around it, or is smoother inside
+     * than the ground is. A circle traced through gravel or asphalt texture is none of these.
+     */
+    private fun appearanceFactor(input: FrameInput, x: Float, y: Float, r: Float): Float {
+        val luma = input.luma
+        val cw = input.width / 2
+        var sumIn = 0f; var nIn = 0; var edgeIn = 0
+        var sumOut = 0f; var sumOut2 = 0f; var nOut = 0; var edgeOut = 0
+        var uIn = 0f; var vIn = 0f; var uOut = 0f; var vOut = 0f
+        val rIn = r * 0.75f; val rOut1 = r * 1.2f; val rOut2 = r * 1.6f
+        val x1 = max(3, (x - rOut2).toInt()); val x2 = min(w - 4, (x + rOut2).toInt())
+        val y1 = max(3, (y - rOut2).toInt()); val y2 = min(h - 4, (y + rOut2).toInt())
+        for (py in y1..y2) for (px in x1..x2) {
+            val dx = px - x; val dy = py - y
+            val d = sqrt(dx * dx + dy * dy)
+            val i = py * w + px
+            val l = (luma[i].toInt() and 0xFF).toFloat()
+            val ci = (py / 2) * cw + px / 2
+            val u = (input.chromaU[ci].toInt() and 0xFF).toFloat()
+            val v = (input.chromaV[ci].toInt() and 0xFF).toFloat()
+            if (d <= rIn) {
+                sumIn += l; nIn++; if (edge[i]) edgeIn++
+                uIn += u; vIn += v
+            } else if (d in rOut1..rOut2) {
+                sumOut += l; sumOut2 += l * l; nOut++; if (edge[i]) edgeOut++
+                uOut += u; vOut += v
+            }
+        }
+        if (nIn == 0 || nOut == 0) return 0f
+        val meanIn = sumIn / nIn
+        val meanOut = sumOut / nOut
+        val stdOut = sqrt(max(0f, sumOut2 / nOut - meanOut * meanOut))
+        val contrast = abs(meanIn - meanOut) / (stdOut + 8f)
+        val contrastW = ((contrast - 0.25f) / 0.75f).coerceIn(0f, 1f)
+
+        val densityIn = edgeIn.toFloat() / nIn
+        val densityOut = edgeOut.toFloat() / nOut
+        val smoothW = if (densityOut < 0.03f) 0f else (1f - densityIn / densityOut).coerceIn(0f, 1f)
+        val du = uIn / nIn - uOut / nOut
+        val dv = vIn / nIn - vOut / nOut
+        val colourW = ((sqrt(du * du + dv * dv) - 5f) / 12f).coerceIn(0f, 1f)
+        return maxOf(contrastW, colourW, 0.5f * contrastW + 0.5f * smoothW)
+    }
+
     /** Wood looks warm and saturated; metal looks grey. */
     private fun colourFactor(input: FrameInput, kind: BallKind, x: Float, y: Float, r: Float): Float {
         val cw = input.width / 2
@@ -345,6 +462,8 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
         return if (kind == BallKind.JACK) {
             0.5f + 0.5f * (sumWood / n)
         } else {
+            // A wood-coloured disk is the jack seen at the wrong size, never a boule.
+            if (sumWood / n > 0.45f) return 0f
             val chroma = sumC / n
             val metal = (1f - (chroma - 12f) / 28f).coerceIn(0f, 1f)
             0.75f + 0.25f * metal
@@ -402,11 +521,18 @@ class BallDetector(var spec: BallSpec = BallSpec()) {
         private const val MAX_RADIUS_PX = 260f
         /** A thin 8-connected digital circle has about 4·√2·r pixels. */
         private const val CIRCLE_PIXELS_PER_RADIUS = 5.66f
-        private const val PEAK_MIN_BOULE = 0.32f
-        private const val PEAK_MIN_JACK = 0.34f
-        private const val ACCEPT_BOULE = 0.42f
+        private const val PEAK_MIN_BOULE = 0.26f
+        private const val PEAK_MIN_JACK = 0.30f
+        private const val ACCEPT_BOULE = 0.5f
         private const val ACCEPT_JACK = 0.40f
         private const val SUPPRESS = 1.4f
+        /** Radius scales searched around the predicted size. */
+        private val SCALES = floatArrayOf(0.76f, 0.86f, 0.95f, 1.05f, 1.14f, 1.24f)
+        private const val MIN_SIZE = 0.68f
+        private const val MAX_SIZE = 1.32f
+        private const val MAX_ATTEMPTS = 150
+        private const val MIN_JACK_COLOUR = 0.6f
+        private const val MIN_APPEARANCE = 0.55f
         private const val MAX_PER_KIND = 16
         private const val ANGLE_BINS = 16
         private const val MIN_FILLED_BINS = 8
